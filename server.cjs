@@ -286,6 +286,111 @@ async function startServer() {
     io.emit("logCreated", log);
     res.status(201).json(log);
   });
+  app.post("/api/whatsapp/send-bulk", async (req, res) => {
+    const { targets } = req.body;
+    if (!targets || !Array.isArray(targets)) {
+      return res.status(400).json({ error: "Invalid targets list" });
+    }
+    const provider = process.env.WHATSAPP_PROVIDER || "mock";
+    const token = process.env.WHATSAPP_API_TOKEN || "";
+    const instanceId = process.env.WHATSAPP_INSTANCE_ID || "";
+    const fromNumber = process.env.WHATSAPP_FROM_NUMBER || "";
+    if (!provider || provider === "mock") {
+      console.log(`[MOCK WHATSAPP] Simulating background send for ${targets.length} users.`);
+      for (const u of targets) {
+        const phone = u.phone || u.whatsapp_number;
+        if (!phone) continue;
+        const cleanPhone = phone.replace(/[^0-9]/g, "");
+        const appLink = `https://mediacraft-ai.github.io/BiocraftFlow/?redirect_to_app=true&login_email=${encodeURIComponent(u.email)}&role=${u.role}&pwd=${encodeURIComponent(u.tempPassword || "password123")}`;
+        const text = `Greetings ${u.name},
+
+You have been onboarded to BiocraftFlow as a ${u.role}.
+
+\u{1F680} Open in Downloaded App:
+${appLink}
+
+Log in manual credentials:
+- Email: ${u.email}
+- Temp Password: ${u.tempPassword || "password123"}
+
+Please verify and update your credentials under 'My Profile' once signed in.`;
+        console.log(`[MOCK SEND] To: +${cleanPhone}
+Message:
+${text}
+---------------------------`);
+      }
+      return res.json({ success: true, mode: "mock", message: "Simulated background send. Configure WHATSAPP_PROVIDER in .env for live delivery." });
+    }
+    const results = [];
+    for (const u of targets) {
+      const phone = u.phone || u.whatsapp_number;
+      if (!phone) continue;
+      const cleanPhone = phone.replace(/[^0-9]/g, "");
+      const appLink = `https://mediacraft-ai.github.io/BiocraftFlow/?redirect_to_app=true&login_email=${encodeURIComponent(u.email)}&role=${u.role}&pwd=${encodeURIComponent(u.tempPassword || "password123")}`;
+      const text = `Greetings ${u.name},
+
+You have been onboarded to BiocraftFlow as a ${u.role}.
+
+\u{1F680} Open in Downloaded App:
+${appLink}
+
+Log in manual credentials:
+- Email: ${u.email}
+- Temp Password: ${u.tempPassword || "password123"}
+
+Please verify and update your credentials under 'My Profile' once signed in.`;
+      try {
+        if (provider === "ultramsg") {
+          const response = await fetch(`https://api.ultramsg.com/${instanceId}/messages/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              token,
+              to: cleanPhone,
+              body: text
+            })
+          });
+          const data = await response.json();
+          results.push({ email: u.email, status: response.ok ? "sent" : "failed", details: data });
+        } else if (provider === "wassenger") {
+          const response = await fetch("https://api.wassenger.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              phone: cleanPhone,
+              message: text
+            })
+          });
+          const data = await response.json();
+          results.push({ email: u.email, status: response.ok ? "sent" : "failed", details: data });
+        } else if (provider === "twilio") {
+          const twilioUrl = `https://api.twilio.com/2010-04-01/Accounts/${instanceId}/Messages.json`;
+          const response = await fetch(twilioUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "Authorization": "Basic " + Buffer.from(`${instanceId}:${token}`).toString("base64")
+            },
+            body: new URLSearchParams({
+              To: `whatsapp:+${cleanPhone}`,
+              From: `whatsapp:${fromNumber}`,
+              Body: text
+            })
+          });
+          const data = await response.json();
+          results.push({ email: u.email, status: response.ok ? "sent" : "failed", details: data });
+        } else {
+          results.push({ email: u.email, status: "error", details: "Unknown provider" });
+        }
+      } catch (err) {
+        results.push({ email: u.email, status: "error", error: err.message });
+      }
+    }
+    res.json({ success: true, mode: provider, results });
+  });
   app.get("/api/notifications", (req, res) => {
     res.json(notifications);
   });
