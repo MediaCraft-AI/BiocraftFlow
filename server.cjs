@@ -23,6 +23,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // server.ts
 var import_express = __toESM(require("express"), 1);
+var import_crypto = __toESM(require("crypto"), 1);
 var import_vite = require("vite");
 var import_path = __toESM(require("path"), 1);
 var import_socket = require("socket.io");
@@ -37,6 +38,33 @@ async function startServer() {
     }
   });
   const PORT = 3e3;
+  const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || "biocraftflow_secret_key_32_bytes_len";
+  const IV_LENGTH = 16;
+  function encrypt(text) {
+    if (text.startsWith("encrypted:")) return text;
+    const key = Buffer.concat([Buffer.from(ENCRYPTION_KEY), Buffer.alloc(32)], 32);
+    const iv = import_crypto.default.randomBytes(IV_LENGTH);
+    const cipher = import_crypto.default.createCipheriv("aes-256-cbc", key, iv);
+    let encrypted = cipher.update(text);
+    encrypted = Buffer.concat([encrypted, cipher.final()]);
+    return "encrypted:" + iv.toString("hex") + ":" + encrypted.toString("hex");
+  }
+  function decrypt(text) {
+    if (!text.startsWith("encrypted:")) return text;
+    try {
+      const parts = text.split(":");
+      const iv = Buffer.from(parts[1], "hex");
+      const encryptedText = Buffer.from(parts[2], "hex");
+      const key = Buffer.concat([Buffer.from(ENCRYPTION_KEY), Buffer.alloc(32)], 32);
+      const decipher = import_crypto.default.createDecipheriv("aes-256-cbc", key, iv);
+      let decrypted = decipher.update(encryptedText);
+      decrypted = Buffer.concat([decrypted, decipher.final()]);
+      return decrypted.toString();
+    } catch (err) {
+      console.error("Failed to decrypt GCS key:", err);
+      return text;
+    }
+  }
   let storage = null;
   if (process.env.GCP_PROJECT_ID && process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY) {
     try {
@@ -321,11 +349,12 @@ async function startServer() {
     }
     if (gcsConfig && gcsConfig.gcs_project_id && gcsConfig.gcs_client_email && gcsConfig.gcs_private_key) {
       try {
+        const decryptedKey = decrypt(gcsConfig.gcs_private_key);
         activeStorage = new import_storage.Storage({
           projectId: gcsConfig.gcs_project_id,
           credentials: {
             client_email: gcsConfig.gcs_client_email,
-            private_key: gcsConfig.gcs_private_key.replace(/\\n/g, "\n")
+            private_key: decryptedKey.replace(/\\n/g, "\n")
           }
         });
         const typeConfigMap = {
@@ -364,6 +393,14 @@ async function startServer() {
       res.status(500).json({ error: "Failed to generate upload URL" });
     }
   });
+  app.post("/api/gcs/encrypt-key", (req, res) => {
+    const { privateKey } = req.body;
+    if (!privateKey) {
+      return res.status(400).json({ error: "Private key is required." });
+    }
+    const encrypted = encrypt(privateKey);
+    res.json({ encrypted });
+  });
   app.put("/api/user/profile", async (req, res) => {
     const updatedUser = req.body;
     let backupSuccess = false;
@@ -373,11 +410,12 @@ async function startServer() {
     const gcsConfig = updatedUser.gcs_config;
     if (gcsConfig && gcsConfig.gcs_project_id && gcsConfig.gcs_client_email && gcsConfig.gcs_private_key) {
       try {
+        const decryptedKey = decrypt(gcsConfig.gcs_private_key);
         activeStorage = new import_storage.Storage({
           projectId: gcsConfig.gcs_project_id,
           credentials: {
             client_email: gcsConfig.gcs_client_email,
-            private_key: gcsConfig.gcs_private_key.replace(/\\n/g, "\n")
+            private_key: decryptedKey.replace(/\\n/g, "\n")
           }
         });
         bucketName = gcsConfig.gcs_bucket_name_avatar || gcsConfig.gcs_bucket_name || gcsConfig.gcs_bucket_name_dicom;
